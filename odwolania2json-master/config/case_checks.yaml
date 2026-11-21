@@ -1,0 +1,114 @@
+# Walidacja między dokumentami jednej sprawy. Każda reguła porównuje wartość z jednego
+# dokumentu z wartością z innego; nowe reguły = nowe wpisy tutaj, bez zmian w kodzie.
+#
+# left/right: typ dokumentu + ścieżka w wynikowym JSON (np. pelnomocnicy[].imie_nazwisko)
+# op:
+#   equals        - wartości identyczne (po zwinięciu spacji, bez rozróżniania wielkości liter)
+#   in            - wartość z lewej występuje wśród wartości z prawej
+#   contained_in  - wartość z lewej jest fragmentem wartości z prawej (np. numer w tytule przelewu)
+# Gdy brakuje dokumentu albo wartości, reguła jest pomijana (status "pominięto").
+checks:
+  - name: Pełnomocnik z odwołania występuje w pełnomocnictwie
+    left:  {doc: odwolanie, path: "Odwolujacy[0].pelnomocnik.imie_nazwisko"}
+    right: {doc: pelnomocnictwo, path: "pelnomocnicy[].imie_nazwisko"}
+    op: in
+
+  - name: KRS Odwołującego zgadza się z KRS mocodawcy
+    left:  {doc: odwolanie, path: "Odwolujacy[0].krs"}
+    right: {doc: pelnomocnictwo, path: "mocodawca[0].data.krs"}
+    op: equals
+
+  - name: NIP Odwołującego zgadza się z NIP mocodawcy
+    left:  {doc: odwolanie, path: "Odwolujacy[0].nip"}
+    right: {doc: pelnomocnictwo, path: "mocodawca[0].data.nip"}
+    op: equals
+
+  - name: Nazwa Odwołującego zgadza się z nazwą mocodawcy
+    left:  {doc: odwolanie, path: "Odwolujacy[0].nazwa"}
+    right: {doc: pelnomocnictwo, path: "mocodawca[0].data.nazwa"}
+    op: equals
+
+  - name: Numer postępowania z odwołania jest w tytule przelewu
+    left:  {doc: odwolanie, path: "ZamowieniePubliczne.numer_postepowania"}
+    right: {doc: przelew, path: "przelew_bankowy.tytul"}
+    op: contained_in
+
+  - name: Pełnomocnik z odwołania jest w tytule przelewu (opłata skarbowa)
+    left:  {doc: odwolanie, path: "Odwolujacy[0].pelnomocnik.imie_nazwisko"}
+    right: {doc: przelew, path: "przelew_bankowy.tytul"}
+    op: contained_in
+
+# ======================================================================
+# Reguły merytoryczne (Prawo zamówień publicznych). LICZBY DO WERYFIKACJI U PRAWNIKA.
+#
+# Dodatkowe operatory:
+#   days_between  - dni od daty `left` do daty `right`; ok, gdy nie później niż koniec terminu
+#                   (max_days od zdarzenia; sobota/niedziela/święto przesuwa koniec na
+#                   najbliższy dzień roboczy - art. 509 ust. 2 Pzp)
+#   one_of        - wartość pod `left.path` w KTÓRYMKOLWIEK dokumencie typu `left.doc`
+#                   jest na liście `values`; compare: amount | account | text
+#                   (pusta lista = "pominieto")
+#   exists        - w sprawie jest dokument `require.doc`
+# Wspólne klucze:
+#   when:     {doc: X}                 - reguła tylko, gdy w sprawie jest dokument X
+#             {doc: X, any: [ścieżki]} - ... i któraś ścieżka ma wartość (nie null/0/"")
+#   severity: blad (domyślnie) | ostrzezenie
+# ======================================================================
+
+  # --- termin (art. 515 Pzp) ------------------------------------------
+  # Termin liczony od dnia czynności zamawiającego (czynnosc_dzien) do daty odwołania.
+  #   10 dni  - zamówienia od progów UE, informacja przekazana elektronicznie,
+  #   15 dni  - j.w., informacja przekazana w inny sposób,
+  #    5 dni  - zamówienia poniżej progów UE, elektronicznie (10 dni - w inny sposób).
+  # Program nie wie, który wariant dotyczy sprawy, więc przyjmuje 10 dni.
+  # Uwaga: data na piśmie to nie zawsze dzień wniesienia do Prezesa KIO.
+  - name: Odwołanie wniesione w terminie (art. 515 Pzp)
+    left:  {doc: odwolanie, path: "OdwolanieKIO.czynnosc_dzien"}
+    right: {doc: odwolanie, path: "OdwolanieKIO.data"}
+    op: days_between
+    max_days: 10
+
+  # --- wpis od odwołania ----------------------------------------------
+  # Rozporządzenie Prezesa Rady Ministrów w sprawie wysokości wpisu od odwołania:
+  #    7 500 zł - dostawy i usługi poniżej progów UE
+  #   10 000 zł - roboty budowlane poniżej progów UE
+  #   15 000 zł - dostawy i usługi od progów UE
+  #   20 000 zł - roboty budowlane od progów UE
+  # Ostrzeżenie, nie błąd: w części spraw jest tylko jeden przelew (np. sama opłata skarbowa).
+  - name: Kwota wpisu od odwołania
+    when: {doc: odwolanie}
+    left: {doc: przelew, path: "przelew_bankowy.kwota"}
+    op: one_of
+    compare: amount
+    values: [7500, 10000, 15000, 20000]
+    severity: ostrzezenie
+
+  # Opłata skarbowa od złożenia dokumentu pełnomocnictwa: 17 zł.
+  - name: Opłata skarbowa od pełnomocnictwa (17 zł)
+    when: {doc: pelnomocnictwo}
+    left: {doc: przelew, path: "przelew_bankowy.kwota"}
+    op: one_of
+    compare: amount
+    values: [17]
+    severity: ostrzezenie
+
+  # --- rachunek odbiorcy ----------------------------------------------
+  - name: Wpis wpłacony na rachunek UZP
+    when: {doc: odwolanie}
+    left: {doc: przelew, path: "przelew_bankowy.na_rachunek"}
+    op: one_of
+    compare: account
+    values: []          # uzupełnić numerem rachunku UZP (26 cyfr, spacje i "PL" są ignorowane)
+
+  # --- kompletność sprawy ---------------------------------------------
+  - name: Jest pełnomocnictwo (odwołanie wnosi pełnomocnik)
+    when: {doc: odwolanie, any: ["Odwolujacy[0].przez-pelnomocnika", "Odwolujacy[0].pelnomocnik.imie_nazwisko"]}
+    op: exists
+    require: {doc: pelnomocnictwo}
+    message: "brak pełnomocnictwa, choć odwołanie wnosi pełnomocnik"
+
+  - name: Jest potwierdzenie wpisu
+    when: {doc: odwolanie}
+    op: exists
+    require: {doc: przelew}
+    message: "brak potwierdzenia przelewu wpisu od odwołania"

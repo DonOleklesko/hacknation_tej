@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "podglad",
+      "runtimeExecutable": "C:\\Users\\olak\\Downloads\\odwolania2json-master\\odwolania2json-master\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "odw.api:app", "--port", "8000", "--app-dir", "C:\\Users\\olak\\Downloads\\odwolania2json-master\\odwolania2json-master"],
+      "port": 8000
+    }
+  ]
+}
